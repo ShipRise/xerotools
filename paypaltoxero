@@ -1,0 +1,152 @@
+#!/usr/bin/env ruby
+require "csv"
+require "benchmark"
+require "set"
+
+wanted_statuses = [
+  "Completed",
+  "Cleared",
+  "Refunded",
+  "Partially Refunded",
+  "Reversed",
+]
+
+output_headers = [
+  "Date",
+  "Amount",
+  "Payee",
+  "Description",
+  "Account Code",
+  "Tax Type",
+  "Reference",
+  "Status",
+]
+
+input = CSV.new(ARGF, headers: true, return_headers: true)
+input.header_convert{ |field|
+  field.strip
+}
+
+class ChunkedWriter
+  attr_reader :filename, :file_count, :line_count, :options, :current_file
+
+  def initialize(filename, **options)
+    @filename   = filename
+    @file_count = 0
+    @line_count = 0
+    @options    = options
+  end
+
+  def <<(row)
+    if line_count >= 2000
+      next_file
+    end
+    current_file << row
+    @line_count += 1
+  end
+
+  def close
+    close_current_file
+  end
+
+  def current_file
+    @current_file ||= CSV.open(make_filename, "wb", options)
+  end
+
+  def make_filename
+    "%<base>s%<number>02d%<ext>s" % {
+      base: File.basename(filename, ".*"),
+      number: file_count,
+      ext: File.extname(filename)
+    }
+  end
+
+  def next_file
+    close_current_file
+    @file_count   += 1
+    @current_file = nil
+    @line_count   = 0
+  end
+
+  def close_current_file
+    current_file.close
+    $stderr.puts "Wrote #{line_count} rows to #{make_filename}"
+    @current_file = nil
+  end
+
+end
+
+count = 0
+out = ChunkedWriter.new("xero.csv", write_headers: true, headers: output_headers)
+input.each do |row|
+  next unless wanted_statuses.include?(row["Status"])
+  gross   = Float(row["Gross"])
+  fee     = Float(row["Fee"])
+  type    = row["Type"]
+  status  = row["Status"]
+  details = "#{row['Name']} <#{row['From Email Address']}>"
+  desc    = "#{type} (#{details})"
+
+  if type == "Recurring Payment Received" && status == "Completed"
+    out << {
+      "Date" => row["Date"],
+      "Amount" => gross,
+      "Payee" => "PayPal Subscriber",
+      "Description" => desc,
+      "Account Code" => "400",
+      "Tax Type" => "Tax on Sales",
+      "Reference" => row["Transaction ID"],
+      "Status" => status,
+    }
+    count += 1
+    out << {
+      "Date" => row["Date"],
+      "Amount" => fee,
+      "Payee" => "PayPal",
+      "Description" => "PayPal Transaction Fee",
+      "Account Code" => "TXNFEE",
+      "Tax Type" => "Tax Exempt",
+      "Reference" => row["Transaction ID"],
+      "Status" => status,
+    }
+    count += 1
+  elsif type == "Shopping Cart Payment Received" &&
+      status == "Completed" &&
+      gross < 100.0
+    out << {
+      "Date" => row["Date"],
+      "Amount" => gross,
+      "Payee" => "PayPal Buyer",
+      "Description" => desc,
+      "Account Code" => "400",
+      "Tax Type" => "Tax on Sales",
+      "Reference" => row["Transaction ID"],
+      "Status" => status,
+    }
+    count += 1
+    out << {
+      "Date" => row["Date"],
+      "Amount" => fee,
+      "Payee" => "PayPal",
+      "Description" => "PayPal Transaction Fee",
+      "Account Code" => "TXNFEE",
+      "Tax Type" => "Tax Exempt",
+      "Reference" => row["Transaction ID"],
+      "Status" => status,
+    }
+    count += 1
+  else
+    out << {
+      "Date" => row["Date"],
+      "Amount" => gross,
+      "Payee" => row["Name"],
+      "Description" => desc,
+      "Account Code" => "",
+      "Tax Type" => "",
+      "Reference" => row["Transaction ID"],
+      "Status" => status,
+    }
+    count += 1
+  end
+end
+out.close
