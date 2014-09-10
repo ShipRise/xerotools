@@ -1,0 +1,117 @@
+#!/usr/bin/env ruby
+require "csv"
+require "benchmark"
+require "set"
+require "bigdecimal"
+require_relative "chunked_writer"
+
+wanted_statuses = [
+  "Completed",
+  "Cleared",
+  "Refunded",
+  "Partially Refunded",
+  "Reversed",
+]
+
+output_headers = [
+  "Date",
+  "Amount",
+  "Payee",
+  "Description",
+  "Account Code",
+  "Tax Type",
+  "Reference",
+  "Status",
+]
+
+input = CSV.new(ARGF, headers: true)
+input.header_convert{ |field|
+  field.strip
+}
+input.convert{|value, info|
+  case info.header
+  when "Date" then Date.strptime(value, "%m/%d/%Y")
+  when "Gross", "Fee", "Net" then BigDecimal(value)
+  else value
+  end
+}
+
+ChunkedWriter.open("xerosum.csv", write_headers: true, headers: output_headers) do |output|
+  last_date = nil
+  sums      = nil
+  total     = BigDecimal(0)
+  while(row = input.readline)
+    next unless wanted_statuses.include?(row["Status"])
+
+    # If we have proceeded to the next day
+    if last_date && row["Date"] != last_date
+      date_string = last_date.strftime('%Y-%m-%d')
+      if sums.values_at(:sub_gross, :sub_fee).any?(&:nonzero?)
+        output << {
+          "Date"                => row["Date"],
+          "Amount"              => sums.fetch(:sub_gross).to_s("F"),
+          "Payee"               => "PayPal Subscriber",
+          "Description"         => "Aggregate subscription payments for #{date_string}",
+          "Account Code"        => "400",
+          "Tax Type"            => "Tax on Sales",
+        }
+        output << {
+          "Date"                => row["Date"],
+          "Amount"              => sums.fetch(:sub_fee).to_s("F"),
+          "Payee"               => "PayPal",
+          "Description"         => "Aggregate subscription fees for #{date_string}",
+          "Account Code"        => "TXNFEE",
+          "Tax Type"            => "Tax Exempt",
+        }
+      end
+      if sums.values_at(:pay_gross, :pay_fee).any?(&:nonzero?)
+        output << {
+          "Date"                => row["Date"],
+          "Amount"              => sums.fetch(:pay_gross).to_s("F"),
+          "Payee"               => "PayPal Buyer",
+          "Description"         => "Aggregate shopping payments for #{date_string}",
+          "Account Code"        => "400",
+          "Tax Type"            => "Tax on Sales",
+          "Status"              => row["Status"],
+        }
+        output << {
+          "Date"                => row["Date"],
+          "Amount"              => sums.fetch(:pay_fee).to_s("F"),
+          "Payee"               => "PayPal",
+          "Description"         => "Aggregate shopping fees for #{date_string}",
+          "Account Code"        => "TXNFEE",
+          "Tax Type"            => "Tax Exempt",
+          "Status"              => row["Status"],
+        }
+      end
+      sums = nil
+    end
+
+    sums ||= Hash.new(BigDecimal(0))
+
+    if row["Type"] == "Recurring Payment Received" && row["Status"] == "Completed"
+      sums[:sub_gross] += row["Gross"]
+      sums[:sub_fee]   += row["Fee"]
+      total            += row["Gross"]
+    elsif row["Type"] == "Shopping Cart Payment Received" && row["Status"] == "Completed"
+      sums[:pay_gross] += row["Gross"]
+      sums[:pay_fee]   += row["Fee"]
+      total            += row["Gross"]
+    else
+      output << {
+        "Date"          => row["Date"],
+        "Amount"        => row["Gross"].to_s("F"),
+        "Payee"         => row["Name"],
+        "Description"   => row["Type"],
+        "Account Code"  => "",
+        "Tax Type"      => "",
+        "Reference"     => row["Transaction ID"],
+        "Status"        => row["Status"],
+      }
+      total            += row["Gross"] if row["Gross"] > 0.0
+    end
+
+    last_date = row["Date"]
+  end
+  $stderr.puts "Wrote #{output.lineno} lines. Total volume $#{total.to_s("F")}"
+end
