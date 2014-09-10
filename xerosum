@@ -31,7 +31,7 @@ input.header_convert{ |field|
 input.convert{|value, info|
   case info.header
   when "Date" then Date.strptime(value, "%m/%d/%Y")
-  when "Gross", "Fee", "Net" then BigDecimal(value)
+  when "Gross", "Fee", "Net" then BigDecimal(value.gsub(",", ""))
   else value
   end
 }
