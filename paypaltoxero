@@ -2,6 +2,7 @@
 require "csv"
 require "benchmark"
 require "set"
+require_relative "chunked_writer"
 
 wanted_statuses = [
   "Completed",
@@ -27,54 +28,6 @@ input.header_convert{ |field|
   field.strip
 }
 
-class ChunkedWriter
-  attr_reader :filename, :file_count, :line_count, :options, :current_file
-
-  def initialize(filename, **options)
-    @filename   = filename
-    @file_count = 0
-    @line_count = 0
-    @options    = options
-  end
-
-  def <<(row)
-    if line_count >= 2000
-      next_file
-    end
-    current_file << row
-    @line_count += 1
-  end
-
-  def close
-    close_current_file
-  end
-
-  def current_file
-    @current_file ||= CSV.open(make_filename, "wb", options)
-  end
-
-  def make_filename
-    "%<base>s%<number>02d%<ext>s" % {
-      base: File.basename(filename, ".*"),
-      number: file_count,
-      ext: File.extname(filename)
-    }
-  end
-
-  def next_file
-    close_current_file
-    @file_count   += 1
-    @current_file = nil
-    @line_count   = 0
-  end
-
-  def close_current_file
-    current_file.close
-    $stderr.puts "Wrote #{line_count} rows to #{make_filename}"
-    @current_file = nil
-  end
-
-end
 
 count = 0
 out = ChunkedWriter.new("xero.csv", write_headers: true, headers: output_headers)
