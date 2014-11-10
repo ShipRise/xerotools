@@ -24,7 +24,7 @@ output_headers = [
   "Status",
 ]
 
-input = CSV.new(ARGF, headers: true)
+input = CSV.new(ARGF, headers: true, row_sep: "\r\n")
 input.header_convert{ |field|
   field.strip
 }
